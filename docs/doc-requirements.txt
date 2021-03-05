@@ -9,3 +9,4 @@ sphinxcontrib_github_alt
 sphinxcontrib-openapi
 sphinxemoji
 git+https://github.com/pandas-dev/pydata-sphinx-theme.git@master
+sphinx>=3.0.4 # not directly required, pinned by Snyk to avoid a vulnerability
