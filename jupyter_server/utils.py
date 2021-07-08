@@ -3,19 +3,24 @@
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 
-from __future__ import print_function
-
+from _frozen_importlib_external import _NamespacePath
 import asyncio
 import errno
+import importlib.util
 import inspect
 import os
+import socket
 import sys
 from distutils.version import LooseVersion
+from contextlib import contextmanager
 
-from urllib.parse import quote, unquote, urlparse, urljoin
+from urllib.parse import (quote, unquote, urlparse, urljoin,
+    urlsplit, urlunsplit, SplitResult)
 from urllib.request import pathname2url
 
-from ipython_genutils import py3compat
+from tornado.httpclient import AsyncHTTPClient, HTTPClient, HTTPRequest
+from tornado.netutil import Resolver
+from tornado.ioloop import IOLoop
 
 
 def url_path_join(*pieces):
@@ -61,8 +66,8 @@ def url_escape(path):
 
     Turns '/foo bar/' into '/foo%20bar/'
     """
-    parts = py3compat.unicode_to_str(path, encoding='utf8').split('/')
-    return u'/'.join([quote(p) for p in parts])
+    parts = path.split("/")
+    return "/".join([quote(p) for p in parts])
 
 
 def url_unescape(path):
@@ -70,10 +75,7 @@ def url_unescape(path):
 
     Turns '/foo%20bar/' into '/foo bar/'
     """
-    return u'/'.join([
-        py3compat.str_to_unicode(unquote(p), encoding='utf8')
-        for p in py3compat.unicode_to_str(path, encoding='utf8').split('/')
-    ])
+    return "/".join([unquote(p) for p in path.split("/")])
 
 
 def samefile_simple(path, other_path):
@@ -88,12 +90,12 @@ def samefile_simple(path, other_path):
     Only to be used if os.path.samefile is not available.
 
     Parameters
-    -----------
-    path:       String representing a path to a file
-    other_path: String representing a path to another file
+    ----------
+    path : String representing a path to a file
+    other_path : String representing a path to another file
 
     Returns
-    -----------
+    -------
     same:   Boolean that is True if both path and other path are the same
     """
     path_stat = os.stat(path)
@@ -199,7 +201,7 @@ def run_sync(maybe_async):
 
     Returns
     -------
-    result :
+    result
         Whatever the async object returns, or the object itself.
     """
     if not inspect.isawaitable(maybe_async):
@@ -224,5 +226,170 @@ def run_sync(maybe_async):
             if str(e) == 'This event loop is already running':
                 # just return a Future, hoping that it will be awaited
                 result = asyncio.ensure_future(maybe_async)
+            else:
+                raise e
         return result
     return wrapped()
+
+
+async def run_sync_in_loop(maybe_async):
+    """Runs a function synchronously whether it is an async function or not.
+
+    If async, runs maybe_async and blocks until it has executed.
+
+    If not async, just returns maybe_async as it is the result of something
+    that has already executed.
+
+    Parameters
+    ----------
+    maybe_async : async or non-async object
+        The object to be executed, if it is async.
+
+    Returns
+    -------
+    result
+        Whatever the async object returns, or the object itself.
+    """
+    if not inspect.isawaitable(maybe_async):
+        return maybe_async
+    return await maybe_async
+
+
+def urlencode_unix_socket_path(socket_path):
+    """Encodes a UNIX socket path string from a socket path for the `http+unix` URI form."""
+    return socket_path.replace('/', '%2F')
+
+
+def urldecode_unix_socket_path(socket_path):
+    """Decodes a UNIX sock path string from an encoded sock path for the `http+unix` URI form."""
+    return socket_path.replace('%2F', '/')
+
+
+def urlencode_unix_socket(socket_path):
+    """Encodes a UNIX socket URL from a socket path for the `http+unix` URI form."""
+    return 'http+unix://%s' % urlencode_unix_socket_path(socket_path)
+
+
+def unix_socket_in_use(socket_path):
+    """Checks whether a UNIX socket path on disk is in use by attempting to connect to it."""
+    if not os.path.exists(socket_path):
+        return False
+
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(socket_path)
+    except socket.error:
+        return False
+    else:
+        return True
+    finally:
+        sock.close()
+
+
+@contextmanager
+def _request_for_tornado_client(
+    urlstring,
+    method="GET",
+    body=None,
+    headers=None
+):
+    """A utility that provides a context that handles
+    HTTP, HTTPS, and HTTP+UNIX request.
+    Creates a tornado HTTPRequest object with a URL
+    that tornado's HTTPClients can accept.
+    If the request is made to a unix socket, temporarily
+    configure the AsyncHTTPClient to resolve the URL
+    and connect to the proper socket.
+    """
+    parts = urlsplit(urlstring)
+    if parts.scheme in ["http", "https"]:
+        pass
+    elif parts.scheme == "http+unix":
+        # If unix socket, mimic HTTP.
+        parts = SplitResult(
+            scheme="http",
+            netloc=parts.netloc,
+            path=parts.path,
+            query=parts.query,
+            fragment=parts.fragment
+        )
+
+        class UnixSocketResolver(Resolver):
+            """A resolver that routes HTTP requests to unix sockets
+            in tornado HTTP clients.
+            Due to constraints in Tornados' API, the scheme of the
+            must be `http` (not `http+unix`). Applications should replace
+            the scheme in URLS before making a request to the HTTP client.
+            """
+            def initialize(self, resolver):
+                self.resolver = resolver
+
+            def close(self):
+                self.resolver.close()
+
+            async def resolve(self, host, port, *args, **kwargs):
+                return [
+                    (socket.AF_UNIX, urldecode_unix_socket_path(host))
+                ]
+
+        resolver = UnixSocketResolver(resolver=Resolver())
+        AsyncHTTPClient.configure(None, resolver=resolver)
+    else:
+        raise Exception("Unknown URL scheme.")
+
+    # Yield the request for the given client.
+    url = urlunsplit(parts)
+    request = HTTPRequest(
+        url,
+        method=method,
+        body=body,
+        headers=headers
+    )
+    yield request
+
+
+def fetch(
+    urlstring,
+    method="GET",
+    body=None,
+    headers=None
+):
+    """
+    Send a HTTP, HTTPS, or HTTP+UNIX request
+    to a Tornado Web Server. Returns a tornado HTTPResponse.
+    """
+    with _request_for_tornado_client(urlstring) as request:
+        response = HTTPClient(AsyncHTTPClient).fetch(request)
+    return response
+
+
+async def async_fetch(
+    urlstring,
+    method="GET",
+    body=None,
+    headers=None,
+    io_loop=None
+):
+    """
+    Send an asynchronous HTTP, HTTPS, or HTTP+UNIX request
+    to a Tornado Web Server. Returns a tornado HTTPResponse.
+    """
+    with _request_for_tornado_client(urlstring) as request:
+        response = await AsyncHTTPClient(io_loop).fetch(request)
+    return response
+
+
+def is_namespace_package(namespace):
+    """Is the provided namespace a Python Namespace Package (PEP420).
+
+    https://www.python.org/dev/peps/pep-0420/#specification
+
+    Returns `None` if module is not importable.
+
+    """
+    # NOTE: using submodule_search_locations because the loader can be None
+    spec = importlib.util.find_spec(namespace)
+    if not spec:
+        # e.g. module not installed
+        return None
+    return isinstance(spec.submodule_search_locations, _NamespacePath)

@@ -1,6 +1,7 @@
 import pytest
 from traitlets.config import Config
 from jupyter_server.serverapp import ServerApp
+from jupyter_server.utils import run_sync
 from .mockextensions.app import MockExtensionApp
 
 
@@ -89,3 +90,54 @@ OPEN_BROWSER_COMBINATIONS = (
 def test_browser_open(monkeypatch, jp_environ, config, expected_value):
     serverapp = MockExtensionApp.initialize_server(config=Config(config))
     assert serverapp.open_browser == expected_value
+
+
+
+def test_load_parallel_extensions(monkeypatch, jp_environ):
+    serverapp = MockExtensionApp.initialize_server()
+    exts = serverapp.extension_manager.extensions
+    assert 'jupyter_server.tests.extension.mockextensions.mock1' in exts
+    assert 'jupyter_server.tests.extension.mockextensions' in exts
+
+    exts = serverapp.jpserver_extensions
+    assert exts['jupyter_server.tests.extension.mockextensions.mock1']
+    assert exts['jupyter_server.tests.extension.mockextensions']
+
+
+def test_stop_extension(jp_serverapp, caplog):
+    """Test the stop_extension method.
+
+    This should be fired by ServerApp.cleanup_extensions.
+    """
+    calls = 0
+
+    # load extensions (make sure we only have the one extension loaded
+    jp_serverapp.extension_manager.load_all_extensions(jp_serverapp)
+    extension_name = 'jupyter_server.tests.extension.mockextensions'
+    assert list(jp_serverapp.extension_manager.extension_apps) == [
+        extension_name
+    ]
+
+    # add a stop_extension method for the extension app
+    async def _stop(*args):
+        nonlocal calls
+        calls += 1
+    for apps in jp_serverapp.extension_manager.extension_apps.values():
+        for app in apps:
+            if app:
+                app.stop_extension = _stop
+
+    # call cleanup_extensions, check the logging is correct
+    caplog.clear()
+    run_sync(jp_serverapp.cleanup_extensions())
+    assert [
+        msg
+        for *_, msg in caplog.record_tuples
+    ] == [
+        'Shutting down 1 extension',
+        '{} | extension app "mockextension" stopping'.format(extension_name),
+        '{} | extension app "mockextension" stopped'.format(extension_name),
+    ]
+
+    # check the shutdown method was called once
+    assert calls == 1

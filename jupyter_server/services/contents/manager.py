@@ -29,7 +29,6 @@ from traitlets import (
     validate,
     default,
 )
-from ipython_genutils.py3compat import string_types
 from jupyter_server.transutils import _i18n
 from jupyter_server.utils import ensure_async
 
@@ -106,7 +105,7 @@ class ContentsManager(LoggingConfigurable):
     @validate('pre_save_hook')
     def _validate_pre_save_hook(self, proposal):
         value = proposal['value']
-        if isinstance(value, string_types):
+        if isinstance(value, str):
             value = import_item(self.pre_save_hook)
         if not callable(value):
             raise TraitError("pre_save_hook must be callable")
@@ -118,7 +117,13 @@ class ContentsManager(LoggingConfigurable):
             try:
                 self.log.debug("Running pre-save hook on %s", path)
                 self.pre_save_hook(model=model, path=path, contents_manager=self, **kwargs)
+            except HTTPError:
+                # allow custom HTTPErrors to raise,
+                # rejecting the save with a message.
+                raise
             except Exception:
+                # unhandled errors don't prevent saving,
+                # which could cause frustrating data loss
                 self.log.error("Pre-save hook failed on %s", path, exc_info=True)
 
     checkpoints_class = Type(Checkpoints, config=True)
@@ -321,7 +326,7 @@ class ContentsManager(LoggingConfigurable):
             The name of a file, including extension
         path : unicode
             The API path of the target's directory
-        insert: unicode
+        insert : unicode
             The characters to insert after the base filename
 
         Returns
@@ -623,7 +628,7 @@ class AsyncContentsManager(ContentsManager):
         exists : bool
             Whether the target exists.
         """
-        return await (ensure_async(self.file_exists(path)) or ensure_async(self.dir_exists(path)))
+        return await ensure_async(self.file_exists(path)) or await ensure_async(self.dir_exists(path))
 
     async def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
@@ -686,7 +691,7 @@ class AsyncContentsManager(ContentsManager):
             The name of a file, including extension
         path : unicode
             The API path of the target's directory
-        insert: unicode
+        insert : unicode
             The characters to insert after the base filename
 
         Returns

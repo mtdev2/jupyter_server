@@ -1,6 +1,6 @@
 # Jupyter Server
 
-[![Build Status](https://github.com/jupyter/jupyter_server/workflows/CI/badge.svg)](https://github.com/jupyter/jupyter_server/actions)
+[![Build Status](https://github.com/jupyter/jupyter_server/workflows/CI/badge.svg?query=branch%3Amaster++)](https://github.com/jupyter-server/jupyter_server/actions?query=branch%3Amaster++)
 [![Documentation Status](https://readthedocs.org/projects/jupyter-server/badge/?version=latest)](http://jupyter-server.readthedocs.io/en/latest/?badge=latest)
 
 The Jupyter Server provides the backend (i.e. the core services, APIs, and REST endpoints) for Jupyter web applications like Jupyter notebook, JupyterLab, and Voila.
@@ -12,7 +12,7 @@ For more information, read our [documentation here](http://jupyter-server.readth
 To install the latest release locally, make sure you have
 [pip installed](https://pip.readthedocs.io/en/stable/installing/) and run:
 
-    $ pip install jupyter_server
+    pip install jupyter_server
 
 Jupyter Server currently supports Python>=3.6 on Linux, OSX and Windows.
 
@@ -31,14 +31,11 @@ To see the changes between releases, checkout the [CHANGELOG](https://github.com
 
 Launch with:
 
-    $ jupyter server
+    jupyter server
 
 ### Testing
 
-To test an installed `jupyter_server`, run the following:
-
-    $ pip install jupyter_server[test]
-    $ pytest jupyter_server
+See [CONTRIBUTING](https://github.com/jupyter-server/jupyter_server/blob/master/CONTRIBUTING.rst#running-tests).
 
 ## Contributing
 
@@ -48,6 +45,6 @@ If you are interested in contributing to the project, see [`CONTRIBUTING.rst`](C
 
 * When: Thursdays [8:00am, Pacific time](https://www.thetimezoneconverter.com/?t=8%3A00%20am&tz=San%20Francisco&)
 * Where: [Jovyan Zoom](https://zoom.us/my/jovyan?pwd=c0JZTHlNdS9Sek9vdzR3aTJ4SzFTQT09)
-* What: [Meeting notes](https://github.com/jupyter/jupyter_server/issues/126)
+* What: [Meeting notes](https://github.com/jupyter-server/team-compass/issues/4)
 
 See our tentative [roadmap here](https://github.com/jupyter/jupyter_server/issues/127).

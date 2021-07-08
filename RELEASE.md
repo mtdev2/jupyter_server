@@ -1,41 +1,48 @@
 # Making a Jupyter Server Release
-To create a release, perform the following steps...
 
-## Remove untracked files
-```
+## Using `jupyter_releaser`
+
+The recommended way to make a release is to use [`jupyter_releaser`](https://github.com/jupyter-server/jupyter_releaser#checklist-for-adoption).
+
+## Manual Release
+
+To create a manual release, perform the following steps:
+
+### Set up
+
+```bash
+pip install tbump twine build
+git pull origin $(git branch --show-current)
 git clean -dffx
 ```
 
-## Update the version and apply the tag
-```
-vim jupyter_server/_version.py
-export script_version=`python setup.py --version 2>/dev/null`
-git commit -a -m "Release $script_version"
-git tag $script_version
+### Update the version and apply the tag
+
+```bash
+echo "Enter new version"
+read script_version
+tbump ${script_version}
 ```
 
-## Build the artifacts
-```
+### Build the artifacts
+
+```bash
 rm -rf dist
-python setup.py sdist
-python setup.py bdist_wheel
+python -m build .
 ```
 
-## Update the version back to dev
-```
-vim jupyter_server/_version.py
-git commit -a -m "Back to dev version"
+### Update the version back to dev
+
+```bash
+echo "Enter dev version"
+read dev_version
+tbump ${dev_version} --no-tag
+git push origin $(git branch --show-current)
 ```
 
-## Push the commits and tag
-```
-git push --all
-git push --tags
-```
+### Publish the artifacts to pypi
 
-## Publish the artifacts to pypi
-```
-pip install twine
-twine check dist/* 
+```bash
+twine check dist/*
 twine upload dist/*
 ```

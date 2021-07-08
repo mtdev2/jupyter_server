@@ -1,23 +1,30 @@
 import json
+import asyncio
 
+from anyio.to_thread import run_sync
 from tornado import web
 
 from ...base.handlers import APIHandler
 
 
+LOCK = asyncio.Lock()
+
 class NbconvertRootHandler(APIHandler):
 
     @web.authenticated
-    def get(self):
+    async def get(self):
         try:
             from nbconvert.exporters import base
         except ImportError as e:
             raise web.HTTPError(500, "Could not import nbconvert: %s" % e) from e
         res = {}
-        exporters = base.get_export_names()
+        # Some exporters use the filesystem when instantiating, delegate that
+        # to a thread so we don't block the event loop for it.
+        exporters = await run_sync(base.get_export_names)
         for exporter_name in exporters:
             try:
-                exporter_class = base.get_exporter(exporter_name)
+                async with LOCK:
+                    exporter_class = await run_sync(base.get_exporter, exporter_name)
             except ValueError:
                 # I think the only way this will happen is if the entrypoint
                 # is uninstalled while this method is running

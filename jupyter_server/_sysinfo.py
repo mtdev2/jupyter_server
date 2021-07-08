@@ -6,8 +6,6 @@ Utilities for getting information about Jupyter and the system it's running in.
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 
-from __future__ import absolute_import
-
 import os
 import platform
 import pprint
@@ -28,15 +26,15 @@ def pkg_commit_hash(pkg_path):
     Parameters
     ----------
     pkg_path : str
-       directory containing package
-       only used for getting commit from active repo
+        directory containing package
+        only used for getting commit from active repo
 
     Returns
     -------
     hash_from : str
-       Where we got the hash from - description
+        Where we got the hash from - description
     hash_str : str
-       short form of hash
+        short form of hash
     """
 
     # maybe we are in a repository, check for a .git folder
@@ -60,7 +58,7 @@ def pkg_commit_hash(pkg_path):
             else:
                 return u'', u''
         par_path = p.dirname(par_path)
-                
+
     return u'', u''
 
 
@@ -70,12 +68,12 @@ def pkg_info(pkg_path):
     Parameters
     ----------
     pkg_path : str
-       path containing __init__.py for package
+        path containing __init__.py for package
 
     Returns
     -------
     context : dict
-       with named parameters of interest
+        with named parameters of interest
     """
     src, hsh = pkg_commit_hash(pkg_path)
     return dict(

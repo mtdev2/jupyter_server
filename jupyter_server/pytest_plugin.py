@@ -18,7 +18,7 @@ from traitlets.config import Config
 
 from jupyter_server.extension import serverextension
 from jupyter_server.serverapp import ServerApp
-from jupyter_server.utils import url_path_join
+from jupyter_server.utils import url_path_join, run_sync
 from jupyter_server.services.contents.filemanager import FileContentsManager
 from jupyter_server.services.contents.largefilemanager import LargeFileManager
 
@@ -30,6 +30,12 @@ pytest_plugins = [
     # This plugin and use the fixtures directly from Jupyter Core.
     # "jupyter_core.pytest_plugin"
 ]
+
+
+import asyncio
+if os.name == "nt" and sys.version_info >= (3, 7):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 # ============ Move to Jupyter Core =============
 
@@ -278,7 +284,7 @@ def jp_serverapp(
     """Starts a Jupyter Server instance based on the established configuration values."""
     app = jp_configurable_serverapp(config=jp_server_config, argv=jp_argv)
     yield app
-    app._cleanup()
+    run_sync(app._cleanup())
 
 
 @pytest.fixture
@@ -330,7 +336,7 @@ def jp_fetch(jp_serverapp, http_server_client, jp_auth_header, jp_base_url):
 
 
 @pytest.fixture
-def jp_ws_fetch(jp_serverapp, jp_auth_header, jp_http_port, jp_base_url):
+def jp_ws_fetch(jp_serverapp, http_server_client, jp_auth_header, jp_http_port, jp_base_url):
     """Sends a websocket request to a test server.
 
     The fixture is a factory; it can be called like

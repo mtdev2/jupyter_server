@@ -20,7 +20,7 @@ from jupyter_core.application import JupyterApp, NoStart
 
 from jupyter_server.serverapp import ServerApp
 from jupyter_server.transutils import _i18n
-from jupyter_server.utils import url_path_join
+from jupyter_server.utils import url_path_join, is_namespace_package
 from .handler import ExtensionHandlerMixin
 
 # -----------------------------------------------------------------------------
@@ -174,7 +174,11 @@ class ExtensionApp(JupyterApp):
 
     @classmethod
     def get_extension_package(cls):
-        return cls.__module__.split('.')[0]
+        parts = cls.__module__.split('.')
+        if is_namespace_package(parts[0]):
+            # in this case the package name is `<namespace>.<package>`.
+            return '.'.join(parts[0:2])
+        return parts[0]
 
     @classmethod
     def get_extension_point(cls):
@@ -416,6 +420,9 @@ class ExtensionApp(JupyterApp):
         # Start the server.
         self.serverapp.start()
 
+    async def stop_extension(self):
+        """Cleanup any resources managed by this extension."""
+
     def stop(self):
         """Stop the underlying Jupyter server.
         """
@@ -477,12 +484,18 @@ class ExtensionApp(JupyterApp):
         The `launch_instance` method uses this method to initialize
         and start a server.
         """
+        jpserver_extensions = {cls.get_extension_package(): True}
+        find_extensions = cls.load_other_extensions
+        if 'jpserver_extensions' in cls.serverapp_config:
+            jpserver_extensions.update(cls.serverapp_config['jpserver_extensions'])
+            cls.serverapp_config['jpserver_extensions'] = jpserver_extensions
+            find_extensions = False
         serverapp = ServerApp.instance(
-            jpserver_extensions={cls.get_extension_package(): True}, **kwargs)
+            jpserver_extensions=jpserver_extensions, **kwargs)
         serverapp.initialize(
             argv=argv,
             starter_extension=cls.name,
-            find_extensions=cls.load_other_extensions,
+            find_extensions=find_extensions,
         )
         return serverapp
 
@@ -509,7 +522,6 @@ class ExtensionApp(JupyterApp):
         # before initializing server to make sure these
         # arguments trigger actions from the extension not the server.
         _preparse_for_stopping_flags(cls, args)
-
         serverapp = cls.initialize_server(argv=args)
 
         # Log if extension is blocking other extensions from loading.

@@ -26,13 +26,12 @@ from jupyter_server._sysinfo import get_sys_info
 
 from traitlets.config import Application
 from ipython_genutils.path import filefind
-from ipython_genutils.py3compat import string_types
 
 from jupyter_core.paths import is_hidden
 import jupyter_server
 from jupyter_server._tz import utcnow
 from jupyter_server.i18n import combine_translations
-from jupyter_server.utils import ensure_async, url_path_join, url_is_absolute, url_escape
+from jupyter_server.utils import ensure_async, url_path_join, url_is_absolute, url_escape, urldecode_unix_socket_path
 from jupyter_server.services.security import csp_report_uri
 
 #-----------------------------------------------------------------------------
@@ -74,6 +73,7 @@ class AuthenticatedHandler(web.RequestHandler):
 
     def set_default_headers(self):
         headers = {}
+        headers["X-Content-Type-Options"] = "nosniff"
         headers.update(self.settings.get('headers', {}))
 
         headers["Content-Security-Policy"] = self.content_security_policy
@@ -383,13 +383,69 @@ class JupyterHandler(AuthenticatedHandler):
             )
         return allow
 
+    def check_referer(self):
+        """Check Referer for cross-site requests.
+        Disables requests to certain endpoints with
+        external or missing Referer.
+        If set, allow_origin settings are applied to the Referer
+        to whitelist specific cross-origin sites.
+        Used on GET for api endpoints and /files/
+        to block cross-site inclusion (XSSI).
+        """
+        if self.allow_origin == "*" or self.skip_check_origin():
+            return True
+
+        host = self.request.headers.get("Host")
+        referer = self.request.headers.get("Referer")
+
+        if not host:
+            self.log.warning("Blocking request with no host")
+            return False
+        if not referer:
+            self.log.warning("Blocking request with no referer")
+            return False
+
+        referer_url = urlparse(referer)
+        referer_host = referer_url.netloc
+        if referer_host == host:
+            return True
+
+        # apply cross-origin checks to Referer:
+        origin = "{}://{}".format(referer_url.scheme, referer_url.netloc)
+        if self.allow_origin:
+            allow = self.allow_origin == origin
+        elif self.allow_origin_pat:
+            allow = bool(self.allow_origin_pat.match(origin))
+        else:
+            # No CORS settings, deny the request
+            allow = False
+
+        if not allow:
+            self.log.warning("Blocking Cross Origin request for %s.  Referer: %s, Host: %s",
+                self.request.path, origin, host,
+            )
+        return allow
+
     def check_xsrf_cookie(self):
         """Bypass xsrf cookie checks when token-authenticated"""
         if self.token_authenticated or self.settings.get('disable_check_xsrf', False):
             # Token-authenticated requests do not need additional XSRF-check
             # Servers without authentication are vulnerable to XSRF
             return
-        return super(JupyterHandler, self).check_xsrf_cookie()
+        try:
+            return super(JupyterHandler, self).check_xsrf_cookie()
+        except web.HTTPError as e:
+            if self.request.method in {'GET', 'HEAD'}:
+                # Consider Referer a sufficient cross-origin check for GET requests
+                if not self.check_referer():
+                    referer = self.request.headers.get('Referer')
+                    if referer:
+                        msg = "Blocking Cross Origin request from {}.".format(referer)
+                    else:
+                        msg = "Blocking request from unknown origin"
+                    raise web.HTTPError(403, msg)
+            else:
+                raise
 
     def check_host(self):
         """Check the host header if remote access disallowed.
@@ -406,13 +462,18 @@ class JupyterHandler(AuthenticatedHandler):
         if host.startswith('[') and host.endswith(']'):
             host = host[1:-1]
 
-        try:
-            addr = ipaddress.ip_address(host)
-        except ValueError:
-            # Not an IP address: check against hostnames
-            allow = host in self.settings.get('local_hostnames', ['localhost'])
+        # UNIX socket handling
+        check_host = urldecode_unix_socket_path(host)
+        if check_host.startswith('/') and os.path.exists(check_host):
+            allow = True
         else:
-            allow = addr.is_loopback
+            try:
+                addr = ipaddress.ip_address(host)
+            except ValueError:
+                # Not an IP address: check against hostnames
+                allow = host in self.settings.get('local_hostnames', ['localhost'])
+            else:
+                allow = addr.is_loopback
 
         if not allow:
             self.log.warning(
@@ -633,6 +694,11 @@ class AuthenticatedFileHandler(JupyterHandler, web.StaticFileHandler):
                 "; sandbox allow-scripts"
 
     @web.authenticated
+    def head(self, path):
+        self.check_xsrf_cookie()
+        return super(AuthenticatedFileHandler, self).head(path)
+
+    @web.authenticated
     def get(self, path):
         if os.path.splitext(path)[1] == '.ipynb' or self.get_argument("download", False):
             name = path.rsplit('/', 1)[-1]
@@ -723,7 +789,7 @@ class FileFindHandler(JupyterHandler, web.StaticFileHandler):
     def initialize(self, path, default_filename=None, no_cache_paths=None):
         self.no_cache_paths = no_cache_paths or []
 
-        if isinstance(path, string_types):
+        if isinstance(path, str):
             path = [path]
 
         self.root = tuple(

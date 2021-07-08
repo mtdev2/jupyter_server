@@ -12,7 +12,7 @@ import sys
 import mimetypes
 import nbformat
 
-from anyio import run_sync_in_worker_thread
+from anyio.to_thread import run_sync
 from send2trash import send2trash
 from tornado import web
 
@@ -22,7 +22,6 @@ from .manager import AsyncContentsManager, ContentsManager
 
 from ipython_genutils.importstring import import_item
 from traitlets import Any, Unicode, Bool, TraitError, observe, default, validate
-from ipython_genutils.py3compat import getcwd, string_types
 
 from jupyter_core.paths import exists, is_hidden, is_file_hidden
 from jupyter_server import _tz as tz
@@ -47,7 +46,7 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
         try:
             return self.parent.root_dir
         except AttributeError:
-            return getcwd()
+            return os.getcwd()
 
     post_save_hook = Any(None, config=True, allow_none=True,
         help="""Python callable or importstring thereof
@@ -70,7 +69,7 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
     @validate('post_save_hook')
     def _validate_post_save_hook(self, proposal):
         value = proposal['value']
-        if isinstance(value, string_types):
+        if isinstance(value, str):
             value = import_item(value)
         if not callable(value):
             raise TraitError("post_save_hook must be callable")
@@ -274,7 +273,7 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
                     # skip over broken symlinks in listing
                     if e.errno == errno.ENOENT:
                         self.log.warning("%s doesn't exist", os_path)
-                    else:
+                    elif e.errno != errno.EACCES:  # Don't provide clues about protected files
                         self.log.warning("Error stat-ing %s: %s", os_path, e)
                     continue
 
@@ -284,16 +283,24 @@ class FileContentsManager(FileManagerMixin, ContentsManager):
                     self.log.debug("%s not a regular file", os_path)
                     continue
 
-                if self.should_list(name):
-                    if self.allow_hidden or not is_file_hidden(os_path, stat_res=st):
-                        contents.append(
+                try:
+                    if self.should_list(name):
+                        if self.allow_hidden or not is_file_hidden(os_path, stat_res=st):
+                            contents.append(
                                 self.get(path='%s/%s' % (path, name), content=False)
+                            )
+                except OSError as e:
+                    # ELOOP: recursive symlink, also don't show failure due to permissions
+                    if e.errno not in [errno.ELOOP, errno.EACCES]:
+                        self.log.warning(
+                            "Unknown error checking if file %r is hidden",
+                            os_path,
+                            exc_info=True,
                         )
 
             model['format'] = 'json'
 
         return model
-
 
     def _file_model(self, path, content=True, format=None):
         """Build a model for a file
@@ -571,7 +578,7 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
         if content:
             model['content'] = contents = []
             os_dir = self._get_os_path(path)
-            dir_contents = await run_sync_in_worker_thread(os.listdir, os_dir)
+            dir_contents = await run_sync(os.listdir, os_dir)
             for name in dir_contents:
                 try:
                     os_path = os.path.join(os_dir, name)
@@ -581,12 +588,12 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
                     continue
 
                 try:
-                    st = await run_sync_in_worker_thread(os.lstat, os_path)
+                    st = await run_sync(os.lstat, os_path)
                 except OSError as e:
                     # skip over broken symlinks in listing
                     if e.errno == errno.ENOENT:
                         self.log.warning("%s doesn't exist", os_path)
-                    else:
+                    elif e.errno != errno.EACCES:  # Don't provide clues about protected files
                         self.log.warning("Error stat-ing %s: %s", os_path, e)
                     continue
 
@@ -596,10 +603,19 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
                     self.log.debug("%s not a regular file", os_path)
                     continue
 
-                if self.should_list(name):
-                    if self.allow_hidden or not is_file_hidden(os_path, stat_res=st):
-                        contents.append(
-                                await self.get(path='%s/%s' % (path, name), content=False)
+                try:
+                    if self.should_list(name):
+                        if self.allow_hidden or not is_file_hidden(os_path, stat_res=st):
+                            contents.append(
+                                    await self.get(path='%s/%s' % (path, name), content=False)
+                        )
+                except OSError as e:
+                    # ELOOP: recursive symlink, also don't show failure due to permissions
+                    if e.errno not in [errno.ELOOP, errno.EACCES]:
+                        self.log.warning(
+                            "Unknown error checking if file %r is hidden",
+                            os_path,
+                            exc_info=True,
                         )
 
             model['format'] = 'json'
@@ -705,7 +721,7 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
             raise web.HTTPError(400, u'Cannot create hidden directory %r' % os_path)
         if not os.path.exists(os_path):
             with self.perm_to_403():
-                await run_sync_in_worker_thread(os.mkdir, os_path)
+                await run_sync(os.mkdir, os_path)
         elif not os.path.isdir(os_path):
             raise web.HTTPError(400, u'Not a directory: %s' % (os_path))
         else:
@@ -775,8 +791,8 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
             # It's a bit more nuanced than this, but until we can better
             # distinguish errors from send2trash, assume that we can only trash
             # files on the same partition as the home directory.
-            file_dev = (await run_sync_in_worker_thread(os.stat, os_path)).st_dev
-            home_dev = (await run_sync_in_worker_thread(os.stat, os.path.expanduser('~'))).st_dev
+            file_dev = (await run_sync(os.stat, os_path)).st_dev
+            home_dev = (await run_sync(os.stat, os.path.expanduser('~'))).st_dev
             return file_dev == home_dev
 
         async def is_non_empty_dir(os_path):
@@ -784,7 +800,7 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
                 # A directory containing only leftover checkpoints is
                 # considered empty.
                 cp_dir = getattr(self.checkpoints, 'checkpoint_dir', None)
-                dir_contents = set(await run_sync_in_worker_thread(os.listdir, os_path))
+                dir_contents = set(await run_sync(os.listdir, os_path))
                 if dir_contents - {cp_dir}:
                     return True
 
@@ -812,11 +828,11 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
                 raise web.HTTPError(400, u'Directory %s not empty' % os_path)
             self.log.debug("Removing directory %s", os_path)
             with self.perm_to_403():
-                await run_sync_in_worker_thread(shutil.rmtree, os_path)
+                await run_sync(shutil.rmtree, os_path)
         else:
             self.log.debug("Unlinking file %s", os_path)
             with self.perm_to_403():
-                await run_sync_in_worker_thread(rm, os_path)
+                await run_sync(rm, os_path)
 
     async def rename_file(self, old_path, new_path):
         """Rename a file."""
@@ -835,7 +851,7 @@ class AsyncFileContentsManager(FileContentsManager, AsyncFileManagerMixin, Async
         # Move the file
         try:
             with self.perm_to_403():
-                await run_sync_in_worker_thread(shutil.move, old_os_path, new_os_path)
+                await run_sync(shutil.move, old_os_path, new_os_path)
         except web.HTTPError:
             raise
         except Exception as e:

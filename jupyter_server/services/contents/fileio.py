@@ -12,7 +12,7 @@ import io
 import os
 import shutil
 
-from anyio import run_sync_in_worker_thread
+from anyio.to_thread import run_sync
 from tornado.web import HTTPError
 
 from jupyter_server.utils import (
@@ -21,7 +21,6 @@ from jupyter_server.utils import (
 )
 import nbformat
 
-from ipython_genutils.py3compat import str_to_unicode
 
 from traitlets.config import Configurable
 from traitlets import Bool
@@ -37,7 +36,7 @@ def replace_file(src, dst):
 async def async_replace_file(src, dst):
     """ replace dst with src asynchronously
     """
-    await run_sync_in_worker_thread(os.replace, src, dst)
+    await run_sync(os.replace, src, dst)
 
 def copy2_safe(src, dst, log=None):
     """copy src to dst
@@ -56,9 +55,9 @@ async def async_copy2_safe(src, dst, log=None):
 
     like shutil.copy2, but log errors in copystat instead of raising
     """
-    await run_sync_in_worker_thread(shutil.copyfile, src, dst)
+    await run_sync(shutil.copyfile, src, dst)
     try:
-        await run_sync_in_worker_thread(shutil.copystat, src, dst)
+        await run_sync(shutil.copystat, src, dst)
     except OSError:
         if log:
             log.debug("copystat on %s failed", dst, exc_info=True)
@@ -87,17 +86,14 @@ def atomic_writing(path, text=True, encoding='utf-8', log=None, **kwargs):
     Parameters
     ----------
     path : str
-      The target file to write to.
-
+        The target file to write to.
     text : bool, optional
-      Whether to open the file in text mode (i.e. to write unicode). Default is
-      True.
-
+        Whether to open the file in text mode (i.e. to write unicode). Default is
+        True.
     encoding : str, optional
-      The encoding to use for files opened in text mode. Default is UTF-8.
-
+        The encoding to use for files opened in text mode. Default is UTF-8.
     **kwargs
-      Passed to :func:`io.open`.
+        Passed to :func:`io.open`.
     """
     # realpath doesn't work on Windows: https://bugs.python.org/issue9949
     # Luckily, we only need to resolve the file itself being a symlink, not
@@ -143,17 +139,14 @@ def _simple_writing(path, text=True, encoding='utf-8', log=None, **kwargs):
     Parameters
     ----------
     path : str
-      The target file to write to.
-
+        The target file to write to.
     text : bool, optional
-      Whether to open the file in text mode (i.e. to write unicode). Default is
-      True.
-
+        Whether to open the file in text mode (i.e. to write unicode). Default is
+        True.
     encoding : str, optional
-      The encoding to use for files opened in text mode. Default is UTF-8.
-
+        The encoding to use for files opened in text mode. Default is UTF-8.
     **kwargs
-      Passed to :func:`io.open`.
+        Passed to :func:`io.open`.
     """
     # realpath doesn't work on Windows: https://bugs.python.org/issue9949
     # Luckily, we only need to resolve the file itself being a symlink, not
@@ -231,7 +224,7 @@ class FileManagerMixin(Configurable):
                 # this may not work perfectly on unicode paths on Python 2,
                 # but nobody should be doing that anyway.
                 if not os_path:
-                    os_path = str_to_unicode(e.filename or 'unknown file')
+                    os_path = e.filename or "unknown file"
                 path = to_api_path(os_path, root=self.root_dir)
                 raise HTTPError(403, u'Permission denied: %s' % path) from e
             else:
@@ -362,7 +355,7 @@ class AsyncFileManagerMixin(FileManagerMixin):
         """Read a notebook from an os path."""
         with self.open(os_path, 'r', encoding='utf-8') as f:
             try:
-                return await run_sync_in_worker_thread(partial(nbformat.read, as_version=as_version), f)
+                return await run_sync(partial(nbformat.read, as_version=as_version), f)
             except Exception as e:
                 e_orig = e
 
@@ -386,7 +379,7 @@ class AsyncFileManagerMixin(FileManagerMixin):
     async def _save_notebook(self, os_path, nb):
         """Save a notebook to an os_path."""
         with self.atomic_writing(os_path, encoding='utf-8') as f:
-            await run_sync_in_worker_thread(partial(nbformat.write, version=nbformat.NO_CONVERT), nb, f)
+            await run_sync(partial(nbformat.write, version=nbformat.NO_CONVERT), nb, f)
 
     async def _read_file(self, os_path, format):
         """Read a non-notebook file.
@@ -401,7 +394,7 @@ class AsyncFileManagerMixin(FileManagerMixin):
             raise HTTPError(400, "Cannot read non-file %s" % os_path)
 
         with self.open(os_path, 'rb') as f:
-            bcontent = await run_sync_in_worker_thread(f.read)
+            bcontent = await run_sync(f.read)
 
         if format is None or format == 'text':
             # Try to interpret as unicode if format is unknown or if unicode
@@ -436,4 +429,4 @@ class AsyncFileManagerMixin(FileManagerMixin):
             ) from e
 
         with self.atomic_writing(os_path, text=False) as f:
-            await run_sync_in_worker_thread(f.write, bcontent)
+            await run_sync(f.write, bcontent)
