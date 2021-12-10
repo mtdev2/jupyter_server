@@ -11,13 +11,15 @@ share what area of the project you are interested in working on.
 For general documentation about contributing to Jupyter projects, see the
 `Project Jupyter Contributor Documentation`__.
 
-__ https://jupyter.readthedocs.io/en/latest/contributor/content-contributor.html
+__ https://jupyter.readthedocs.io/en/latest/contributing/content-contributor.html
 
 Setting Up a Development Environment
 ====================================
 
 Installing the Jupyter Server
 -----------------------------
+
+The development version of the server requires `node <https://nodejs.org/en/download/>`_ and `pip <https://pip.pypa.io/en/stable/installing/>`_.
 
 Once you have installed the dependencies mentioned above, use the following
 steps::
@@ -34,6 +36,33 @@ Once you have done this, you can launch the master branch of Jupyter server
 from any directory in your system with::
 
     jupyter server
+
+
+Code Styling
+-----------------------------
+`jupyter_server` has adopted automatic code formatting so you shouldn't
+need to worry too much about your code style.
+As long as your code is valid,
+the pre-commit hook should take care of how it should look.
+To install `pre-commit`, run the following::
+
+    pip install pre-commit
+    pre-commit install
+
+
+You can invoke the pre-commit hook by hand at any time with::
+
+    pre-commit run
+
+which should run any autoformatting on your code
+and tell you about any errors it couldn't fix automatically.
+You may also install [black integration](https://github.com/psf/black#editor-integration)
+into your text editor to format code automatically.
+
+If you have already committed files before setting up the pre-commit
+hook with ``pre-commit install``, you can fix everything up using
+``pre-commit run --all-files``. You need to make the fixing commit
+yourself after that.
 
 Troubleshooting the Installation
 --------------------------------
@@ -56,10 +85,12 @@ Running Tests
 Install dependencies::
 
     pip install -e .[test]
+    pip install -e examples/simple  # to test the examples
 
 To run the Python tests, use::
 
-    pytest
+    pytest jupyter_server
+    pytest examples/simple  # to test the examples
 
 Building the Docs
 =================
@@ -97,4 +128,4 @@ Windows users can find ``make.bat`` in the ``docs`` folder.
 
 You should also have a look at the `Project Jupyter Documentation Guide`__.
 
-__ https://jupyter.readthedocs.io/en/latest/contrib_docs/index.html
+__ https://jupyter.readthedocs.io/en/latest/contributing/content-contributor.html

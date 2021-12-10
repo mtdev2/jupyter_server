@@ -1,8 +1,7 @@
 """A base class session manager."""
-
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
-
+import pathlib
 import uuid
 
 try:
@@ -14,8 +13,10 @@ except ImportError:
 from tornado import web
 
 from traitlets.config.configurable import LoggingConfigurable
-from ipython_genutils.py3compat import unicode_type
 from traitlets import Instance
+from traitlets import Unicode
+from traitlets import validate
+from traitlets import TraitError
 
 from jupyter_server.utils import ensure_async
 from jupyter_server.traittypes import InstanceFromClasses
@@ -23,33 +24,66 @@ from jupyter_server.traittypes import InstanceFromClasses
 
 class SessionManager(LoggingConfigurable):
 
-    kernel_manager = Instance('jupyter_server.services.kernels.kernelmanager.MappingKernelManager')
+    database_filepath = Unicode(
+        default_value=":memory:",
+        help=(
+            "Th filesystem path to SQLite Database file "
+            "(e.g. /path/to/session_database.db). By default, the session "
+            "database is stored in-memory (i.e. `:memory:` setting from sqlite3) "
+            "and does not persist when the current Jupyter Server shuts down."
+        ),
+    ).tag(config=True)
+
+    @validate("database_filepath")
+    def _validate_database_filepath(self, proposal):
+        value = proposal["value"]
+        if value == ":memory:":
+            return value
+        path = pathlib.Path(value)
+        if path.exists():
+            # Verify that the database path is not a directory.
+            if path.is_dir():
+                raise TraitError(
+                    "`database_filepath` expected a file path, but the given path is a directory."
+                )
+            # Verify that database path is an SQLite 3 Database by checking its header.
+            with open(value, "rb") as f:
+                header = f.read(100)
+
+            if not header.startswith(b"SQLite format 3") and not header == b"":
+                raise TraitError("The given file is not an SQLite database file.")
+        return value
+
+    kernel_manager = Instance("jupyter_server.services.kernels.kernelmanager.MappingKernelManager")
     contents_manager = InstanceFromClasses(
         [
-            'jupyter_server.services.contents.manager.ContentsManager',
-            'notebook.services.contents.manager.ContentsManager'
+            "jupyter_server.services.contents.manager.ContentsManager",
+            "notebook.services.contents.manager.ContentsManager",
         ]
     )
 
     # Session database initialized below
     _cursor = None
     _connection = None
-    _columns = {'session_id', 'path', 'name', 'type', 'kernel_id'}
+    _columns = {"session_id", "path", "name", "type", "kernel_id"}
 
     @property
     def cursor(self):
         """Start a cursor and create a database called 'session'"""
         if self._cursor is None:
             self._cursor = self.connection.cursor()
-            self._cursor.execute("""CREATE TABLE session
-                (session_id, path, name, type, kernel_id)""")
+            self._cursor.execute(
+                """CREATE TABLE IF NOT EXISTS session
+                (session_id, path, name, type, kernel_id)"""
+            )
         return self._cursor
 
     @property
     def connection(self):
         """Start a database connection"""
         if self._connection is None:
-            self._connection = sqlite3.connect(':memory:')
+            # Set isolation level to None to autocommit all changes to the database.
+            self._connection = sqlite3.connect(self.database_filepath, isolation_level=None)
             self._connection.row_factory = sqlite3.Row
         return self._connection
 
@@ -81,23 +115,31 @@ class SessionManager(LoggingConfigurable):
 
     def new_session_id(self):
         "Create a uuid for a new session"
-        return unicode_type(uuid.uuid4())
+        return str(uuid.uuid4())
 
-    async def create_session(self, path=None, name=None, type=None, kernel_name=None, kernel_id=None):
+    async def create_session(
+        self, path=None, name=None, type=None, kernel_name=None, kernel_id=None
+    ):
         """Creates a session and returns its model"""
         session_id = self.new_session_id()
         if kernel_id is not None and kernel_id in self.kernel_manager:
             pass
         else:
-            kernel_id = await self.start_kernel_for_session(session_id, path, name, type, kernel_name)
-        result = await self.save_session(session_id, path=path, name=name, type=type, kernel_id=kernel_id)
+            kernel_id = await self.start_kernel_for_session(
+                session_id, path, name, type, kernel_name
+            )
+        result = await self.save_session(
+            session_id, path=path, name=name, type=type, kernel_id=kernel_id
+        )
         return result
 
     async def start_kernel_for_session(self, session_id, path, name, type, kernel_name):
         """Start a new kernel for a given session."""
         # allow contents manager to specify kernels cwd
         kernel_path = self.contents_manager.get_kernel_path(path=path)
-        kernel_id = await self.kernel_manager.start_kernel(path=kernel_path, kernel_name=kernel_name)
+        kernel_id = await self.kernel_manager.start_kernel(
+            path=kernel_path, kernel_name=kernel_name
+        )
         return kernel_id
 
     async def save_session(self, session_id, path=None, name=None, type=None, kernel_id=None):
@@ -125,8 +167,8 @@ class SessionManager(LoggingConfigurable):
         model : dict
             a dictionary of the session model
         """
-        self.cursor.execute("INSERT INTO session VALUES (?,?,?,?,?)",
-            (session_id, path, name, type, kernel_id)
+        self.cursor.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?)", (session_id, path, name, type, kernel_id)
         )
         result = await self.get_session(session_id=session_id)
         return result
@@ -158,7 +200,7 @@ class SessionManager(LoggingConfigurable):
                 raise TypeError("No such column: %r", column)
             conditions.append("%s=?" % column)
 
-        query = "SELECT * FROM session WHERE %s" % (' AND '.join(conditions))
+        query = "SELECT * FROM session WHERE %s" % (" AND ".join(conditions))
 
         self.cursor.execute(query, list(kwargs.values()))
         try:
@@ -172,7 +214,7 @@ class SessionManager(LoggingConfigurable):
             for key, value in kwargs.items():
                 q.append("%s=%r" % (key, value))
 
-            raise web.HTTPError(404, u'Session not found: %s' % (', '.join(q)))
+            raise web.HTTPError(404, u"Session not found: %s" % (", ".join(q)))
 
         model = await self.row_to_model(row)
         return model
@@ -203,7 +245,7 @@ class SessionManager(LoggingConfigurable):
             if column not in self._columns:
                 raise TypeError("No such column: %r" % column)
             sets.append("%s=?" % column)
-        query = "UPDATE session SET %s WHERE session_id=?" % (', '.join(sets))
+        query = "UPDATE session SET %s WHERE session_id=?" % (", ".join(sets))
         self.cursor.execute(query, list(kwargs.values()) + [session_id])
 
     def kernel_culled(self, kernel_id):
@@ -212,7 +254,7 @@ class SessionManager(LoggingConfigurable):
 
     async def row_to_model(self, row, tolerate_culled=False):
         """Takes sqlite database session row and turns it into a dictionary"""
-        kernel_culled = await ensure_async(self.kernel_culled(row['kernel_id']))
+        kernel_culled = await ensure_async(self.kernel_culled(row["kernel_id"]))
         if kernel_culled:
             # The kernel was culled or died without deleting the session.
             # We can't use delete_session here because that tries to find
@@ -221,27 +263,29 @@ class SessionManager(LoggingConfigurable):
             # If caller wishes to tolerate culled kernels, log a warning
             # and return None.  Otherwise, raise KeyError with a similar
             # message.
-            self.cursor.execute("DELETE FROM session WHERE session_id=?",
-                                (row['session_id'],))
-            msg = "Kernel '{kernel_id}' appears to have been culled or died unexpectedly, " \
-                  "invalidating session '{session_id}'. The session has been removed.".\
-                format(kernel_id=row['kernel_id'],session_id=row['session_id'])
+            self.cursor.execute("DELETE FROM session WHERE session_id=?", (row["session_id"],))
+            msg = (
+                "Kernel '{kernel_id}' appears to have been culled or died unexpectedly, "
+                "invalidating session '{session_id}'. The session has been removed.".format(
+                    kernel_id=row["kernel_id"], session_id=row["session_id"]
+                )
+            )
             if tolerate_culled:
                 self.log.warning(msg + "  Continuing...")
                 return
             raise KeyError(msg)
 
-        kernel_model = await ensure_async(self.kernel_manager.kernel_model(row['kernel_id']))
+        kernel_model = await ensure_async(self.kernel_manager.kernel_model(row["kernel_id"]))
         model = {
-            'id': row['session_id'],
-            'path': row['path'],
-            'name': row['name'],
-            'type': row['type'],
-            'kernel': kernel_model
+            "id": row["session_id"],
+            "path": row["path"],
+            "name": row["name"],
+            "type": row["type"],
+            "kernel": kernel_model,
         }
-        if row['type'] == 'notebook':
+        if row["type"] == "notebook":
             # Provide the deprecated API.
-            model['notebook'] = {'path': row['path'], 'name': row['name']}
+            model["notebook"] = {"path": row["path"], "name": row["name"]}
         return model
 
     async def list_sessions(self):
@@ -262,5 +306,5 @@ class SessionManager(LoggingConfigurable):
     async def delete_session(self, session_id):
         """Deletes the row in the session database with given session_id"""
         session = await self.get_session(session_id=session_id)
-        await ensure_async(self.kernel_manager.shutdown_kernel(session['kernel']['id']))
+        await ensure_async(self.kernel_manager.shutdown_kernel(session["kernel"]["id"]))
         self.cursor.execute("DELETE FROM session WHERE session_id=?", (session_id,))
